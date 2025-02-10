@@ -39,9 +39,8 @@ XComは、[Variables](https://airflow.apache.org/docs/apache-airflow/stable/core
 
 複数のXComを一度にプッシュしたり、プッシュするXComのキー名を変更したい場合は、`do_xcom_push`および`multiple_outputs`引数を`True`に設定し、値の辞書を返すことができます。
 
-**注意点**
-
-最初のタスク実行が成功しない場合、リトライ時にはXComがクリアされ、タスクが再実行しても同じ結果が得られるように処理されます。
+> [!NOTE]  
+> 最初のタスク実行が成功しない場合、リトライ時にはXComがクリアされ、タスクが再実行しても同じ結果が得られるように処理されます。
 
 ## オブジェクトストレージ XComバックエンド
 
@@ -61,9 +60,8 @@ xcom_objectstorage_threshold = 1048576
 xcom_objectstorage_compression = gzip
 ```
 
-**注意点**
-
-圧縮を使用するには、Python環境に対応するライブラリがインストールされている必要があります。例えば、`snappy`圧縮を使用するには`python-snappy`をインストールする必要があります。`zip`、`gzip`、`bz2`は標準でサポートされています。
+> [!NOTE]  
+> 圧縮を使用するには、Python環境に対応するライブラリがインストールされている必要があります。例えば、`snappy`圧縮を使用するには`python-snappy`をインストールする必要があります。`zip`、`gzip`、`bz2`は標準でサポートされています。
 
 ## カスタムXComバックエンド
 
