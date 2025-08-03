@@ -4,7 +4,7 @@ DAG（Directed Acyclic Graph、有向非循環グラフ）はAirflowの中心的
 
 以下は基本的なDAGの例です：
 
-![](https://airflow.apache.org/docs/apache-airflow/stable/_images/basic-dag.png)
+![](https://airflow.apache.org/docs/apache-airflow/stable/_images/basic_dag.png)
 
 このDAGは、A、B、C、Dの4つのタスクを定義し、それらが実行される順番や、どのタスクがどのタスクに依存しているかを決めます。また、DAGがどの頻度で実行されるかも指定します。例えば、「明日から5分ごとに実行する」や「2020年1月1日から毎日実行する」といった形です。
 
@@ -17,9 +17,10 @@ DAGは以下の3つの方法で宣言できます。
 一つ目は`with`文（コンテキストマネージャ）を使う方法で、これにより`with`の内部で定義された内容が暗黙的にDAGに追加されます：
 
 ```python
-import datetime
-from airflow import DAG
-from airflow.operators.empty import EmptyOperator
+ import datetime
+
+ from airflow.sdk import DAG
+ from airflow.providers.standard.operators.empty import EmptyOperator
 
 with DAG(
     dag_id="my_dag_name",
@@ -32,9 +33,10 @@ with DAG(
 二つ目は標準のコンストラクタを使用し、DAGを任意のオペレーターに渡す方法です：
 
 ```python
-import datetime
-from airflow import DAG
-from airflow.operators.empty import EmptyOperator
+ import datetime
+
+ from airflow.sdk import DAG
+ from airflow.providers.standard.operators.empty import EmptyOperator
 
 my_dag = DAG(
     dag_id="my_dag_name",
@@ -48,8 +50,9 @@ EmptyOperator(task_id="task", dag=my_dag)
 
 ```python
 import datetime
-from airflow.decorators import dag
-from airflow.operators.empty import EmptyOperator
+
+from airflow.sdk import dag
+from airflow.providers.standard.operators.empty import EmptyOperator
 
 @dag(start_date=datetime.datetime(2021, 1, 1), schedule="@daily")
 def generate_dag():
@@ -81,7 +84,7 @@ third_task.set_upstream(fourth_task)
 さらに、より複雑な依存関係を宣言するためのショートカットもあります。複数のタスクが別のタスクに依存するようにしたい場合、前述の方法ではなく、`cross_downstream`を使う必要があります：
 
 ```python
-from airflow.models.baseoperator import cross_downstream
+from airflow.sdk import cross_downstream
 
 # 次の依存関係を作成
 # [op1, op2] >> op3
@@ -92,7 +95,7 @@ cross_downstream([op1, op2], [op3, op4])
 依存関係をチェーンのようにつなげる場合は、`chain`を使用します：
 
 ```python
-from airflow.models.baseoperator import chain
+from airflow.sdk import chain
 
 # 次の依存関係を作成
 # op1 >> op2 >> op3 >> op4
@@ -105,7 +108,7 @@ chain(*[EmptyOperator(task_id='op' + str(i)) for i in range(1, 6)])
 チェーンは、リストのサイズが同じ場合にペアワイズで依存関係を作成することもできます（これは`cross_downstream`で作成される交差依存関係とは異なります）：
 
 ```python
-from airflow.models.baseoperator import chain
+from airflow.sdk import chain
 
 # 次の依存関係を作成
 # op1 >> op2 >> op4 >> op6
@@ -191,3 +194,289 @@ DAG Runには開始日と終了日があり、この期間がDAGが実際に「�
 
 > [!TIP]
 > `logical date`に関する詳細な情報については、「[Data Interval](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dag-run.html#data-interval)」と「[What does execution_date mean?](https://airflow.apache.org/docs/apache-airflow/stable/faq.html#faq-what-does-execution-date-mean)」を参照してください。
+
+## DAGの割り当て
+
+すべての **Operator（演算子）/Task（タスク）** は、**必ずDAGに割り当てられている必要があります**。割り当てられていないと、実行されません。Airflow では、DAGを明示的に渡さなくても、自動でDAGを計算するいくつかの方法があります：
+
+* `with DAG` ブロックの中で Operator を定義した場合
+* `@dag` デコレーターの中で Operator を定義した場合
+* DAG が割り当てられている別の Operator を `upstream`（前段）または `downstream`（後段）に指定した場合
+
+それ以外の場合は、**`dag=` パラメータで明示的にDAGを各Operatorに渡す必要があります**。
+
+## デフォルト引数
+
+DAG内の多くのOperatorは、**同じデフォルト引数**（例：リトライ回数など）を必要とすることがよくあります。これを毎回個別に設定する代わりに、DAGの作成時に `default_args` を渡すことで、それに紐づくすべてのOperatorに自動で適用されます。
+
+```python
+import pendulum
+
+with DAG(
+    dag_id="my_dag",
+    start_date=pendulum.datetime(2016, 1, 1),
+    schedule="@daily",
+    default_args={"retries": 2},
+):
+    op = BashOperator(task_id="hello_world", bash_command="Hello World!")
+    print(op.retries)  # 2
+```
+
+## DAG デコレーター
+
+従来の `with DAG` ブロックや `DAG()` コンストラクタを使ったDAG定義に加えて、**関数に `@dag` デコレーターを付けることで、DAGを生成する関数として定義することができます**。
+
+```python
+from typing import TYPE_CHECKING, Any
+import httpx
+import pendulum
+
+from airflow.models.baseoperator import BaseOperator
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.sdk import dag, task
+
+if TYPE_CHECKING:
+    from airflow.sdk import Context
+
+
+class GetRequestOperator(BaseOperator):
+    """指定されたURLにGETリクエストを送信するカスタムオペレーター"""
+
+    template_fields = ("url",)
+
+    def __init__(self, *, url: str, **kwargs):
+        super().__init__(**kwargs)
+        self.url = url
+
+    def execute(self, context: Context):
+        return httpx.get(self.url).json()
+
+
+@dag(
+    schedule=None,
+    start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
+    catchup=False,
+    tags=["example"],
+)
+def example_dag_decorator(url: str = "http://httpbin.org/get"):
+    """
+    IPアドレスを取得して、BashOperatorで表示するDAG
+
+    :param url: IPアドレスを取得するためのURL（デフォルト: "http://httpbin.org/get"）
+    """
+    get_ip = GetRequestOperator(task_id="get_ip", url=url)
+
+    @task(multiple_outputs=True)
+    def prepare_command(raw_json: dict[str, Any]) -> dict[str, str]:
+        external_ip = raw_json["origin"]
+        return {
+            "command": f"echo '今日、Airflowを実行しているサーバーはIP {external_ip} から接続されています'",
+        }
+
+    command_info = prepare_command(get_ip.output)
+
+    BashOperator(task_id="echo_ip_info", bash_command=command_info["command"])
+
+example_dag = example_dag_decorator()
+```
+
+DAG を簡潔に作成できる新しい方法であると同時に、**関数内で定義した任意のパラメータを DAG のパラメータとして設定**することもできます。これにより、[DAG をトリガーする際にこれらのパラメータを設定することができ](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dag-run.html#dagrun-parameters)、Python コード内から、あるいは [Jinja テンプレート](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/operators.html#concepts-jinja-templating)内の `{{ context.params }}` からアクセスできます。
+
+> [!NOTE]
+> Airflow は DAG ファイルの[トップレベル]()に現れる DAG のみを読み込みます。
+> つまり、関数に `@dag` を付けるだけでは不十分で、**その関数を少なくとも1回呼び出し、DAG ファイル内のトップレベルオブジェクトに代入する必要があります**。上記の例でそれが行われていることがわかります。
+
+## 制御フロー
+
+デフォルトでは、**DAGは依存するすべてのタスクが成功したときにのみ、タスクを実行します**。ただし、これを変更する方法はいくつかあります：
+
+* **[ブランチ処理](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html#concepts-branching)** – 条件に基づいて、どのタスクに進むかを選択する
+* **[トリガールール](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html#concepts-trigger-rules)** – タスクを実行する条件を設定する
+* **[セットアップおよびティアダウン](https://airflow.apache.org/docs/apache-airflow/stable/howto/setup-and-teardown.html)** – セットアップ・後処理の関係性を定義する
+* **[Latest Only](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html#concepts-latest-only)** – 現在実行されている DAG のみでタスクを実行する特殊なブランチ処理
+* **[Depends On Past](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html#concepts-depends-on-past)** – タスクが前回の実行結果に依存できるようにする
+
+### ブランチ処理
+
+ブランチ処理を使うことで、すべての下流タスクを実行するのではなく、**一部のパスだけを選択して実行させることができます**。ここで `@task.branch` デコレーターが登場します。
+
+`@task.branch` デコレーターは `@task` と似ていますが、**デコレーターが付けられた関数は、タスクID（またはそのリスト）を返すことが求められます**。指定されたタスクが実行され、それ以外のパスはスキップされます。`None` を返すことで、すべての下流タスクをスキップすることも可能です。
+
+Python関数から返される `task_id` は、**`@task.branch` が付けられたタスクの直接下流である必要があります**。
+
+> [!NOTE]
+> あるタスクが、ブランチオペレーターの下流であり、かつ選択されたタスクの下流でもある場合、**そのタスクはスキップされません**：
+> ![](https://airflow.apache.org/docs/apache-airflow/stable/_images/branch_note.png)
+> ブランチタスクのパスは `branch_a`、`join`、および `branch_b` です。`join` は `branch_a` の下流タスクであるため、**ブランチの選択結果として返されなかった場合でも実行されます**。
+
+`@task.branch` は **XCom と併用することで、上流タスクの結果に基づいて動的にブランチを決定**することもできます：
+
+```python
+@task.branch(task_id="branch_task")
+def branch_func(ti=None):
+    xcom_value = int(ti.xcom_pull(task_ids="start_task"))
+    if xcom_value >= 5:
+        return "continue_task"
+    elif xcom_value >= 3:
+        return "stop_task"
+    else:
+        return None
+
+
+start_op = BashOperator(
+    task_id="start_task",
+    bash_command="echo 5",
+    do_xcom_push=True,
+    dag=dag,
+)
+
+branch_op = branch_func()
+
+continue_op = EmptyOperator(task_id="continue_task", dag=dag)
+stop_op = EmptyOperator(task_id="stop_task", dag=dag)
+
+start_op >> branch_op >> [continue_op, stop_op]
+```
+
+分岐機能を持つ独自のオペレーターを実装したい場合は、`BaseBranchOperator` を継承することができます。これは `@task.branch` デコレーターと同様の動作をしますが、**`choose_branch` メソッドの実装を提供することが求められます**。
+
+> [!NOTE]
+> `@task.branch` デコレーターの使用が推奨されており、`BranchPythonOperator` の直接インスタンス化は推奨されません。後者は、**カスタムオペレーターの実装時にのみ継承して使うべきです**。
+
+`@task.branch` の呼び出し可能オブジェクトと同様に、このメソッドは**下流タスクの ID、またはそのリストを返すことができ、それらのタスクが実行され、それ以外はスキップされます**。また、`None` を返すことで**すべての下流タスクをスキップすることも可能です**。
+
+```python
+class MyBranchOperator(BaseBranchOperator):
+    def choose_branch(self, context):
+        """
+        月初めの日に追加のブランチを実行する
+        """
+        if context['data_interval_start'].day == 1:
+            return ['daily_task_id', 'monthly_task_id']
+        elif context['data_interval_start'].day == 2:
+            return 'daily_task_id'
+        else:
+            return None
+```
+
+通常の Python コード用の `@task.branch` デコレーターと同様に、**仮想環境を使用する `@task.branch_virtualenv` や、外部の Python 実行環境を使用する `@task.branch_external_python` といったブランチ用のデコレーターも存在します**。
+
+### Latest Only
+
+Airflow の DAG 実行（DAG Run）は、**現在の日付とは異なる日付に対して実行されることがよくあります**。たとえば、過去1か月分のデータをバックフィルするために、毎日1回ずつ DAG を実行する場合などです。
+
+ただし、DAG の一部またはすべてのパーツを **過去の日付に対しては実行したくない場合**があります。そのようなケースでは、`LatestOnlyOperator` を使用することができます。
+
+この特殊なオペレーターは、**現在が「最新」の DAG 実行でない場合、下流のすべてのタスクをスキップします**（つまり、現在の壁時計の時刻がその `execution_time` と次のスケジュールされた `execution_time` の間にあり、かつ外部トリガーによる実行でない場合）。
+
+```python
+import datetime
+import pendulum
+
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.latest_only import LatestOnlyOperator
+from airflow.sdk import DAG
+from airflow.utils.trigger_rule import TriggerRule
+
+with DAG(
+    dag_id="latest_only_with_trigger",
+    schedule=datetime.timedelta(hours=4),
+    start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
+    catchup=False,
+    tags=["example3"],
+) as dag:
+    latest_only = LatestOnlyOperator(task_id="latest_only")
+    task1 = EmptyOperator(task_id="task1")
+    task2 = EmptyOperator(task_id="task2")
+    task3 = EmptyOperator(task_id="task3")
+    task4 = EmptyOperator(task_id="task4", trigger_rule=TriggerRule.ALL_DONE)
+
+    latest_only >> task1 >> [task3, task4]
+    task2 >> [task3, task4]
+```
+
+この DAG の場合：
+
+* `task1` は `latest_only` の直接の下流にあり、**最新の実行時以外はスキップされます**。
+* `task2` は `latest_only` にまったく依存していないため、**すべてのスケジュールされた実行で実行されます**。
+* `task3` は `task1` と `task2` の下流にあり、**デフォルトのトリガールールが `all_success` であるため、`task1` がスキップされると連鎖的にスキップされます**。
+* `task4` も `task1` と `task2` の下流ですが、**トリガールールが `all_done` に設定されているためスキップされません**。
+
+![](https://airflow.apache.org/docs/apache-airflow/stable/_images/latest_only_with_trigger.png)
+
+### Depends On Past
+
+タスクが、**前回の DAG 実行においてそのタスク自身が成功していた場合にのみ実行されるようにする**こともできます。これを実現するには、**そのタスクに `depends_on_past` 引数を `True` に設定するだけです**。
+
+> [!NOTE]
+> DAG のライフサイクルの最初、つまり**初めて自動実行されるタイミングでは、依存すべき過去の実行が存在しないため、タスクは実行されます**。
+
+### トリガールール
+
+デフォルトでは、Airflow は **すべての上流（直接の親）タスクが[成功](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/tasks.html#concepts-task-states)した場合にのみ**、あるタスクを実行します。
+
+ただし、これはデフォルトの挙動にすぎず、**タスクに `trigger_rule` 引数を指定することで制御することができます**。
+`trigger_rule` に指定できるオプションは以下のとおりです：
+
+* **`all_success`（デフォルト）**：すべての上流タスクが成功したときに実行
+* **`all_failed`**：すべての上流タスクが `failed` または `upstream_failed` 状態のときに実行
+* **`all_done`**：すべての上流タスクの実行が完了したとき（成功・失敗・スキップを問わない）
+* **`all_skipped`**：すべての上流タスクが `skipped` 状態のときに実行
+* **`one_failed`**：少なくとも1つの上流タスクが `failed` 状態になったときに実行（すべての上流が完了するのを待たない）
+* **`one_success`**：少なくとも1つの上流タスクが `success` 状態になったときに実行（完了を待たない）
+* **`one_done`**：少なくとも1つの上流タスクが `success` または `failed` のときに実行
+* **`none_failed`**：すべての上流タスクが `failed` または `upstream_failed` でない（成功またはスキップ）ときに実行
+* **`none_failed_min_one_success`**：すべての上流タスクが `failed` または `upstream_failed` でなく、さらに少なくとも1つが成功したときに実行
+* **`none_skipped`**：上流タスクに `skipped` が含まれていない（すべてが成功・失敗・upstream\_failed）ときに実行
+* **`always`**：依存関係にかかわらず、いつでもこのタスクを実行する
+
+これらは、[Depends On Past](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html#concepts-depends-on-past) 機能と組み合わせて使用することもできます。
+
+> [!NOTE]
+> **ブランチ操作によってスキップされたタスクと `trigger_rule` の相互作用には注意が必要です。**
+> 特に、ブランチ処理の下流で `all_success` や `all_failed` を使うことはほとんど望ましくありません。
+>
+> スキップされたタスクは、`all_success` や `all_failed` のトリガールールにも伝播し、**それらもスキップされてしまいます**。
+以下の DAG を見てください：
+> 
+> ```python
+> # dags/branch_without_trigger.py
+> 
+> import pendulum
+> from airflow.sdk import task, DAG
+> from airflow.providers.standard.operators.empty import EmptyOperator
+> 
+> dag = DAG(
+>     dag_id="branch_without_trigger",
+>     schedule="@once",
+>     start_date=pendulum.datetime(2019, 2, 28, tz="UTC"),
+> )
+> 
+> run_this_first = EmptyOperator(task_id="run_this_first", dag=dag)
+> 
+> @task.branch(task_id="branching")
+> def do_branching():
+>     return "branch_a"
+> 
+> branching = do_branching()
+> 
+> branch_a = EmptyOperator(task_id="branch_a", dag=dag)
+> follow_branch_a = EmptyOperator(task_id="follow_branch_a", dag=dag)
+> branch_false = EmptyOperator(task_id="branch_false", dag=dag)
+> join = EmptyOperator(task_id="join", dag=dag)
+> 
+> run_this_first >> branching
+> branching >> branch_a >> follow_branch_a >> join
+> branching >> branch_false >> join
+> ```
+>
+> `join` は `follow_branch_a` および `branch_false` の下流にあります。`join` タスクの `trigger_rule` はデフォルトで `all_success` に設定されているため、**ブランチ処理によって発生したスキップが伝播し、`join` タスクもスキップされたものとして表示されます**。
+> ![](https://airflow.apache.org/docs/apache-airflow/stable/_images/branch_without_trigger.png)
+> `join` タスクの `trigger_rule` を `none_failed_min_one_success` に設定することで、**意図したとおりの動作を実現できます**。
+> ![](https://airflow.apache.org/docs/apache-airflow/stable/_images/branch_with_trigger.png)
+
+### セットアップとティアダウン
+
+データワークフローでは、**リソース（たとえばコンピュートリソース）を作成し、それを使って作業を行い、その後で破棄する**という処理が一般的です。Airflow はこのニーズに対応するために、**セットアップ（setup）タスクとティアダウン（teardown）タスク**を提供しています。
+
+この機能の使用方法についての詳細は、メイン記事 [Setup and Teardown](https://airflow.apache.org/docs/apache-airflow/stable/howto/setup-and-teardown.html) をご覧ください。
